@@ -1,0 +1,11 @@
+{
+  "server_database_host": "192.168.88.203",
+  "server_database_name": "epayment_server",
+  "server_database_username": "admin",
+  "server_database_password": "admin123",
+  "local_database_host": "192.168.88.203",
+  "local_database_name": "epayment_local",
+  "local_database_username": "admin",
+  "local_database_password": "admin123",
+  "limit_sync_data": 100
+}
