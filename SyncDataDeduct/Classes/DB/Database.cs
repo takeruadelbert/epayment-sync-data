@@ -23,6 +23,7 @@ namespace SyncDataDeduct.Classes.DB
         private string ServerDBPassword { get; set; }
 
         private List<int> TransactionIds = new List<int>();
+        private List<int> TransactionDetailIds = new List<int>();
 
         public Database()
         {
@@ -107,13 +108,20 @@ namespace SyncDataDeduct.Classes.DB
             }
         }
 
-        public long Insert(string type, string query_cmd)
+        public long Insert(string type, string query_cmd, Dictionary<string, object> parameterValues)
         {
             string query = query_cmd;
             long insert_last_id = -1;
             if (this.OpenConnection(type))
             {
                 MySqlCommand cmd = type == "local" ? new MySqlCommand(query, localConnection) : new MySqlCommand(query, serverConnection);
+                if (parameterValues.Count > 0)
+                {
+                    foreach (var param in parameterValues)
+                    {
+                        cmd.Parameters.AddWithValue(param.Key, param.Value);
+                    }
+                }
                 cmd.ExecuteNonQuery();
                 insert_last_id = cmd.LastInsertedId;
                 this.CloseConnection(type);
@@ -251,7 +259,8 @@ namespace SyncDataDeduct.Classes.DB
                     int id = Convert.ToInt32(dataReader["id"].ToString());
                     TransactionIds.Add(id);
 
-                    int parkingOutId = Convert.ToInt32(dataReader["parking_out_id"].ToString());
+                    int? parkingOutId = !string.IsNullOrEmpty(dataReader["parking_out_id"].ToString()) ? Convert.ToInt32(dataReader["parking_out_id"].ToString()) : (int?)null;
+                    int? parkingInId = !string.IsNullOrEmpty(dataReader["parking_in_id"].ToString()) ? Convert.ToInt32(dataReader["parking_in_id"].ToString()) : (int?)null;
                     string deductResult = dataReader["result"].ToString();
                     string transactionDt = TKHelper.ConvertDatetimeToDefaultFormatMySQL(dataReader["transaction_dt"].ToString());
                     int amount = Convert.ToInt32(dataReader["amount"].ToString());
@@ -261,23 +270,59 @@ namespace SyncDataDeduct.Classes.DB
                     string bank = dataReader["bank"].ToString();
                     int hasSynced = Convert.ToInt32(dataReader["has_synced"].ToString());
                     string created = TKHelper.ConvertDatetimeToDefaultFormatMySQL(dataReader["created"].ToString());
-                    transactions.Add(new Transaction(id, parkingOutId, deductResult, amount, transactionDt, bank, ipv4, operatorName, idReader, hasSynced, created));
+                    transactions.Add(new Transaction(id, parkingOutId, parkingInId, deductResult, amount, transactionDt, bank, ipv4, operatorName, idReader, hasSynced, created));
                 }
                 CloseConnection("local");
             }
             return transactions;
         }
 
+        private List<TransactionDetail> FetchUnsyncDataTransactionDetail()
+        {
+            List<TransactionDetail> transactionDetails = new List<TransactionDetail>();
+            if (OpenConnection("local"))
+            {
+                string query = "select * from deduct_card_result_details where has_synced = 0 limit " + DataConfig.LimitSyncData;
+                MySqlCommand command = new MySqlCommand(query, localConnection);
+                MySqlDataReader reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    int deductCardResultDetailId = Convert.ToInt32(reader["id"].ToString());
+                    TransactionDetailIds.Add(deductCardResultDetailId);
+
+                    int deductCardResultId = Convert.ToInt32(reader["deduct_card_result_id"].ToString());
+                    int? peopleTicketId = !string.IsNullOrEmpty(reader["people_ticket_id"].ToString()) ? Convert.ToInt32(reader["people_ticket_id"].ToString()) : (int?)null;
+                    int? cargoFareId = !string.IsNullOrEmpty(reader["cargo_fare_id"].ToString()) ? Convert.ToInt32(reader["cargo_fare_id"].ToString()) : (int?)null;
+                    int amount = Convert.ToInt32(reader["amount"].ToString());
+                    int hasSynced = Convert.ToInt32(reader["has_synced"].ToString());
+                    string created = reader["created"].ToString();
+                    transactionDetails.Add(new TransactionDetail(deductCardResultDetailId, deductCardResultId, peopleTicketId, cargoFareId, amount, hasSynced, created));
+                }
+                CloseConnection("local");
+            }
+            return transactionDetails;
+        }
+
         public void SyncDataToServer()
         {
             List<Transaction> transactions = FetchUnsyncDataTransaction();
+            List<TransactionDetail> transactionDetails = FetchUnsyncDataTransactionDetail();
+
+            if (transactions.Count == 0 && transactionDetails.Count == 0)
+            {
+                Console.WriteLine(ConstantVariable.SYNC_UP_TO_DATE);
+                return;
+            }
+
             if (transactions.Count > 0 && TransactionIds.Count > 0)
             {
                 try
                 {
+                    // Sync Data Table 'deduct_card_results'
                     foreach (Transaction transaction in transactions)
                     {
-                        int parkingOutId = transaction.ParkingOutId;
+                        int? parkingOutId = transaction.ParkingOutId;
+                        int? parkingInId = transaction.ParkingInId;
                         string result = transaction.DeductResult;
                         int amount = transaction.Amount;
                         string transactionDt = TKHelper.ConvertDatetimeToDefaultFormatMySQL(transaction.TransactionDatetime);
@@ -287,10 +332,23 @@ namespace SyncDataDeduct.Classes.DB
                         string operatorName = transaction.OperatorName;
                         string idReader = transaction.IdReader;
 
-                        string query = "INSERT INTO deduct_card_results (parking_out_id, result, amount, transaction_dt, bank, ipv4, operator, ID_reader, created) VALUES('" + parkingOutId + "', '" +
-                        result + "', '" + amount + "', '" + transactionDt + "', '" + bank + "', '" + ipv4 + "', '" + operatorName + "', '" + idReader + "', '" + created + "')";
-
-                        Insert("server", query);
+                        string tableName = "deduct_card_results";
+                        string query = string.Format("INSERT INTO {0} (parking_out_id, parking_in_id, result, amount, transaction_dt, bank, ipv4, operator, ID_reader, created)" +
+                                       "VALUES(@parking_out_id, @parking_in_id, @result, @amount, @transaction_dt, @bank, @ipv4, @operator, @ID_reader, @created)", tableName);
+                        Dictionary<string, object> param = new Dictionary<string, object>()
+                        {
+                            {"@parking_out_id", parkingOutId ?? (object)DBNull.Value },
+                            {"@parking_in_id", parkingInId ?? (object)DBNull.Value },
+                            {"@result", result },
+                            {"@amount", amount },
+                            {"@transaction_dt", transactionDt },
+                            {"@bank", bank },
+                            {"@ipv4", ipv4 },
+                            {"@operator", operatorName },
+                            {"@ID_reader", idReader },
+                            {"@created", created }
+                        };
+                        Insert("server", query, param);
                     }
 
                     foreach (int transactionId in TransactionIds)
@@ -298,16 +356,57 @@ namespace SyncDataDeduct.Classes.DB
                         string query = "update deduct_card_results set has_synced = 1 where id = " + transactionId;
                         Update("local", query);
                     }
-                    Console.WriteLine(TransactionIds.Count + ConstantVariable.SYNC_DATA_SUCCESS);
+
+                    string resultSuccess = String.Format("{0} Transaction {1}", TransactionIds.Count, ConstantVariable.SYNC_DATA_SUCCESS);
+                    Console.WriteLine(resultSuccess);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine(ConstantVariable.ERROR_MESSAGE_INSERT_TRANSACTION_RECORD_INTO_DATABASE + "\nError : " + ex.Message);
                 }
             }
-            else
+
+            // Sync Data table 'deduct_card_result_details'
+            if (transactionDetails.Count > 0 && TransactionDetailIds.Count > 0)
             {
-                Console.WriteLine(ConstantVariable.SYNC_UP_TO_DATE);
+                try
+                {
+                    foreach (TransactionDetail transactionDetail in transactionDetails)
+                    {
+                        int deductCardResultId = transactionDetail.DeductCardResultId;
+                        int? peopleTicketId = transactionDetail.PeopleTicketId;
+                        int? cargoFareId = transactionDetail.CargoFareId;
+                        int amount = transactionDetail.Amount;
+                        string created = transactionDetail.Created;
+
+                        string databaseName = "deduct_card_result_details";
+                        string query = string.Format("INSERT INTO {0} (deduct_card_result_id, people_ticket_id, cargo_fare_id, amount, created) " +
+                                       "VALUES(@deduct_card_result_id, @people_ticket_id, @cargo_fare_id, @amount, @created)", databaseName);
+
+                        Dictionary<string, object> param = new Dictionary<string, object>()
+                        {
+                            { "@deduct_card_result_id", deductCardResultId },
+                            { "@people_ticket_id", peopleTicketId ?? (object)DBNull.Value},
+                            { "@cargo_fare_id", cargoFareId ?? (object)DBNull.Value },
+                            { "@amount", amount},
+                            { "@created", created}
+                        };
+                        Insert("server", query, param);
+                    }
+
+                    foreach (int transactionDetailId in TransactionDetailIds)
+                    {
+                        string query = "update deduct_card_result_details set has_synced = 1 where id = " + transactionDetailId;
+                        Update("local", query);
+                    }
+
+                    string resultSuccess = String.Format("{0} Transaction Detail {1}", TransactionDetailIds.Count, ConstantVariable.SYNC_DATA_SUCCESS);
+                    Console.WriteLine(resultSuccess);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ConstantVariable.ERROR_MESSAGE_INSERT_TRANSACTION_RECORD_INTO_DATABASE + "\nError : " + ex.Message);
+                }
             }
         }
     }

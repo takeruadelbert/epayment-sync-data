@@ -8,7 +8,10 @@ namespace SyncDataDeduct.Classes.DataModel
         public int TransactionId { get; set; }
 
         [JsonProperty("parking_out_id")]
-        public int ParkingOutId { get; set; }
+        public int? ParkingOutId { get; set; }
+
+        [JsonProperty("parking_in_id")]
+        public int? ParkingInId { get; set; }
 
         [JsonProperty("result")]
         public string DeductResult { get; set; }
@@ -37,10 +40,11 @@ namespace SyncDataDeduct.Classes.DataModel
         [JsonProperty("created")]
         public string CreatedDatetime { get; set; }
 
-        public Transaction(int transactionId, int parkingOutId, string result, int amount, string transactionDt, string bank, string ipv4, string operatorName, string idReader, int hasSynced, string created)
+        public Transaction(int transactionId, int? parkingOutId, int? parkingInId, string result, int amount, string transactionDt, string bank, string ipv4, string operatorName, string idReader, int hasSynced, string created)
         {
             TransactionId = transactionId;
             ParkingOutId = parkingOutId;
+            ParkingInId = parkingInId;
             DeductResult = result;
             Amount = amount;
             TransactionDatetime = transactionDt;
